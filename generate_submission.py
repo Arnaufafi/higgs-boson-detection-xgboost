@@ -32,7 +32,7 @@ submission = pd.DataFrame({
 submission = submission.sort_values(by='Prob', ascending=True)
 submission['RankOrder'] = range(1, len(submission) + 1)
 
-PROBABILITY_THRESHOLD = 0.85
+PROBABILITY_THRESHOLD = 0.938
 submission['Class'] = np.where(submission['Prob'] > PROBABILITY_THRESHOLD, 's', 'b')
 
 submission = submission[['EventId', 'RankOrder', 'Class']]
