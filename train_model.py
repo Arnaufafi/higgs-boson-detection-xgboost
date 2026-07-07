@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import xgboost as xgb
 from sklearn.model_selection import train_test_split
+from features import extract_physics_features
 import math
 
 # 1. AMS CALCULATION FUNCTION (LOCAL VALIDATION)
@@ -22,10 +23,11 @@ def calculate_ams(true_labels, predicitons, weights, threshold):
     return math.sqrt(radicand)
 
 # 2. DATA LOADING AND PREPARATION
-
 print("Loading training data...")
 
 df = pd.read_csv("data/training.csv")
+
+df = extract_physics_features(df)
 
 # Map 's' (signal) to 1 and 'b' (background) to 0
 df["Label"] = df["Label"].map({'s':1, 'b':0})
