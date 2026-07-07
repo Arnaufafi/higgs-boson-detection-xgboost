@@ -20,6 +20,7 @@ data/
 # Ignoramos los modelos para no ocupar espacio innecesario en el repo
 *.model
 higgs_model.json
+*.json
 *.pkl
 submission_final.csv
 

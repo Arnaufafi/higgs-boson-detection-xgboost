@@ -40,6 +40,7 @@ print("Initializing Stratified 5-Fold Cross Validation...")
 skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=23)
 fold_ams_scores = []
 fold_thresholds = []
+seeds = [23, 5, 2024, 777, 8888]
 
 # Variables to track the absolute best model across all folds
 global_best_ams = 0.0
@@ -52,7 +53,6 @@ params = {
     'max_depth': 6,
     'subsample': 0.8,
     'colsample_bytree': 0.8,
-    'seed': 23
 }
 
 for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
@@ -66,6 +66,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
     sum_wpos = np.sum(w_tr[y_tr == 1])
     sum_wneg = np.sum(w_tr[y_tr == 0])
     params['scale_pos_weight'] = sum_wneg / sum_wpos
+    params['seed'] = seeds[fold]
     
     # Rescale validation weights to match the official Test set scale
     w_va_scaled = w_va * (550000 / len(w_va))
@@ -81,7 +82,7 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
         num_boost_round=5000,             
         evals=[(dval, 'validation')],     
         early_stopping_rounds=50,
-        verbose_eval=False # Mantiene la consola limpia de logs por cada árbol
+        verbose_eval=False
     )
 
     # Perform threshold tuning specifically for this fold
@@ -100,14 +101,9 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
     fold_ams_scores.append(best_fold_ams)
     fold_thresholds.append(best_fold_threshold)
     
-    # Check if this is the best model so far and save it temporarily in memory
-    if best_fold_ams > global_best_ams:
-        global_best_ams = best_fold_ams
-        best_model = model
-
-# Save the absolute best model from all folds to disk
-best_model.save_model('higgs_model.json')
-print("\n[INFO] Top-performing fold model saved successfully as 'higgs_model.json'.")
+    model_name = f'higgs_model_fold_{fold + 1}.json'
+    model.save_model(model_name)
+    print(f"[INFO] Saved: {model_name}")
 
 # 4. FINAL RESULTS
 final_ams = np.mean(fold_ams_scores)
