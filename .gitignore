@@ -1,0 +1,45 @@
+# ==========================================
+# 1. Entornos Virtuales y Variables de Entorno
+# ==========================================
+env/
+venv/
+.env
+
+# ==========================================
+# 2. Datos (¡CRÍTICO NO SUBIRLOS A GITHUB!)
+# ==========================================
+data/
+*.csv
+*.root
+*.dat
+*.parquet
+
+# ==========================================
+# 3. Modelos Entrenados y Predicciones
+# ==========================================
+# Ignoramos los modelos para no ocupar espacio innecesario en el repo
+*.model
+higgs_model.json
+*.pkl
+submission_final.csv
+
+# ==========================================
+# 4. Archivos generados por Python
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# ==========================================
+# 5. Entornos de Desarrollo (IDE) y Sistema
+# ==========================================
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ==========================================
+# 6. Jupyter Notebooks (Si decides usarlos luego)
+# ==========================================
+.ipynb_checkpoints/
