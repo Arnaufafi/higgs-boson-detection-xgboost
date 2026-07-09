@@ -2,7 +2,6 @@ import pandas as pd
 import numpy as np
 import xgboost as xgb
 from sklearn.model_selection import StratifiedKFold
-from features import extract_physics_features
 import math
 
 
@@ -24,7 +23,6 @@ def calculate_ams(true_labels, predictions, weights, threshold):
 # 2. DATA LOADING AND PREPARATION
 print("Loading training data...")
 df = pd.read_csv("data/training.csv")
-df = extract_physics_features(df)
 
 # Map 's' (signal) to 1 and 'b' (background) to 0
 df["Label"] = df["Label"].map({'s': 1, 'b': 0})
@@ -40,11 +38,8 @@ print("Initializing Stratified 5-Fold Cross Validation...")
 skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=23)
 fold_ams_scores = []
 fold_thresholds = []
+oof_preds = np.zeros(len(y))   # out-of-fold predictions, for a robust global threshold
 seeds = [23, 5, 2024, 777, 8888]
-
-# Variables to track the absolute best model across all folds
-global_best_ams = 0.0
-best_model = None
 
 params = {
     'objective': 'binary:logistic',
@@ -85,8 +80,11 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
         verbose_eval=False
     )
 
-    # Perform threshold tuning specifically for this fold
+    # Store this fold's predictions for the pooled out-of-fold threshold search
     val_preds = model.predict(dval)
+    oof_preds[val_idx] = val_preds
+
+    # Per-fold threshold tuning (kept only as a diagnostic / reference)
     best_fold_ams = 0.0
     best_fold_threshold = 0.0
     
@@ -107,8 +105,14 @@ for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
 
 # 4. FINAL RESULTS
 final_ams = np.mean(fold_ams_scores)
-final_threshold = np.mean(fold_thresholds)
+w_all_scaled = weights * (550000 / len(weights))
+best_oof_ams, oof_threshold = 0.0, 0.0
+for t in np.arange(0.80, 0.99, 0.005):
+    ams = calculate_ams(y, oof_preds, w_all_scaled, threshold=t)
+    if ams > best_oof_ams:
+        best_oof_ams = ams
+        oof_threshold = t
 
-print(f"   Mean Estimated AMS:    {final_ams:.4f}")
-print(f"   Robust Mean Threshold: {final_threshold:.3f}")
-print(f"   (Use this threshold value in your generate_submission.py)")
+print(f"   Mean per-fold AMS:  {final_ams:.4f}  (reference only)")
+print(f"   OOF global AMS:     {best_oof_ams:.4f}")
+print(f"   >> Threshold to use in generate_submission.py: {oof_threshold:.3f}")

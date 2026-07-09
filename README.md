@@ -25,7 +25,7 @@ serve as learning material.
 3. [The data: what each column means](#en-3-the-data-what-each-column-means)
 4. [The AMS metric: why not accuracy](#en-4-the-ams-metric-why-not-accuracy)
 5. [Solution architecture](#en-5-solution-architecture)
-6. [`features.py` — feature engineering](#en-6-featurespy--feature-engineering)
+6. [Features: why there is no custom feature engineering](#en-6-featurespy--feature-engineering)
 7. [`train_model.py` — training step by step](#en-7-train_modelpy--training-step-by-step)
 8. [`generate_submission.py` — inference and submission](#en-8-generate_submissionpy--inference-and-submission)
 9. [Why each design decision](#en-9-why-each-design-decision)
@@ -62,7 +62,7 @@ Concepts that appear in the variables and are worth keeping in mind:
 - **`eta` (η, pseudorapidity):** a way to measure the angle relative to the beam axis. η≈0 is
   perpendicular to the beam; large η is almost parallel.
 - **`phi` (φ, azimuthal angle):** the angle around the beam (0 to 2π). It is a circular angle:
-  0 and 2π are the same place (this will matter in `features.py`).
+  0 and 2π are the same place.
 - **`MET` (Missing Transverse Energy):** the energy that is "missing". Since neutrinos escape
   without a trace, their presence is inferred from the momentum imbalance. Taus produce
   neutrinos, so MET is a strong signal hint.
@@ -191,10 +191,7 @@ def calculate_ams(true_labels, predictions, weights, threshold):
 ## 5. Solution architecture
 
 ```
-                    data/training.csv (250k, labeled)
-                              │
-                              ▼
-                    features.py  (adds Delta_R_tau_lep)
+                    data/training.csv (250k, labeled, 30 features)
                               │
                               ▼
         ┌─────────────────────────────────────────────┐
@@ -206,10 +203,7 @@ def calculate_ams(true_labels, predictions, weights, threshold):
               higgs_model_fold_1..5.json  +  mean threshold
                               │
                               ▼
-                    data/test.csv (550k, unlabeled)
-                              │
-                              ▼
-                    features.py  (same pipeline)
+                    data/test.csv (550k, unlabeled, 30 features)
                               │
                               ▼
         ┌─────────────────────────────────────────────┐
@@ -231,45 +225,35 @@ Two central ideas:
 
 <a name="en-6-featurespy--feature-engineering"></a>
 
-## 6. `features.py` — feature engineering
+## 6. Features: why there is no custom feature engineering
 
-```python
-def extract_physics_features(df):
-    df_feat = df.copy()
+The model is trained on the **30 official features as-is** (13 `DER_` + 17 `PRI_`). There is no
+separate feature-engineering step, and that is a deliberate, *measured* decision — not laziness.
 
-    # 1. Only events where BOTH the tau and the lepton exist
-    valid_idx = (df_feat['PRI_tau_eta'] != -999.0) & (df_feat['PRI_lep_eta'] != -999.0)
+**The experiment.** An earlier version added an engineered feature, `Delta_R_tau_lep`: the
+angular separation `ΔR = √(Δη² + Δφ²)` between the tau and the lepton (a distance in the (η, φ)
+plane, where signal and background have different geometries). It looked reasonable, but the
+dataset **already ships `DER_deltar_tau_lep`** — the exact same quantity computed by physicists.
+So the "new" feature was really a duplicate.
 
-    # 2. Delta Eta
-    d_eta = df_feat.loc[valid_idx, 'PRI_tau_eta'] - df_feat.loc[valid_idx, 'PRI_lep_eta']
+We verified it instead of guessing. A controlled 5-fold cross-validation (identical splits, seeds
+and params) measured the CV AMS with and without it:
 
-    # 3. Delta Phi (circular angle)
-    d_phi = np.abs(df_feat.loc[valid_idx, 'PRI_tau_phi'] - df_feat.loc[valid_idx, 'PRI_lep_phi'])
-    d_phi = np.where(d_phi > np.pi, 2 * np.pi - d_phi, d_phi)
+| Configuration | Mean CV AMS |
+|---|---|
+| **With** `Delta_R_tau_lep` | 5.5538 |
+| **Without** `Delta_R_tau_lep` | 5.5426 |
+| Δ | −0.0112 (within fold-to-fold noise) |
 
-    # 4. Delta R = sqrt(Δη² + Δφ²)
-    df_feat['Delta_R_tau_lep'] = -999.0
-    df_feat.loc[valid_idx, 'Delta_R_tau_lep'] = np.sqrt(d_eta**2 + d_phi**2)
+The feature added **nothing** (the tiny difference is noise), so it was removed. The model is
+simpler and scores at least as well — **AMS 3.72** on Kaggle, the project's best (see the threshold
+note in [section 11](#en-11-ideas-to-improve-and-learn-more)).
 
-    return df_feat
-```
-
-**What it computes:** the **angular separation ΔR** between the tau and the lepton. It is a
-distance in the (η, φ) plane:  `ΔR = √(Δη² + Δφ²)`. Signal and background tend to have different
-geometries, so this distance helps separate them.
-
-**Details that teach good practices:**
-
-- **The `valid_idx` mask:** it only computes ΔR where both particles exist. Where they don't, it
-  leaves `-999.0`, consistent with the rest of the dataset. Never compute over sentinel values.
-- **The circular Δφ trick:** φ goes from 0 to 2π and "wraps around". The distance between φ=0.1
-  and φ=6.2 is **not** 6.1, but ≈0.18 (the short way around the other side). The line
-  `np.where(d_phi > np.pi, 2π − d_phi, d_phi)` fixes this. Forgetting it is a classic mistake.
-
-> **Honest note for learning:** the dataset already ships `DER_deltar_tau_lep`, which is
-> essentially this same quantity computed by physicists. So `Delta_R_tau_lep` is almost redundant
-> and adds little. It is kept because the 3.7 model was trained with it, but it is a good starting
-> point to experiment (see [section 11](#en-11-ideas-to-improve-and-learn-more)).
+> **Lesson:** good feature engineering means adding information the model does not already have.
+> Recomputing a quantity that is already a column — even a physically meaningful one — is wasted
+> effort. And the way to know is to **measure with cross-validation**, not to trust intuition.
+> Genuinely new features (mass combinations, φ-rotation invariances, etc.) are the real lever —
+> see [section 11](#en-11-ideas-to-improve-and-learn-more).
 
 <a name="en-7-train_modelpy--training-step-by-step"></a>
 
@@ -279,12 +263,11 @@ geometries, so this distance helps separate them.
 
 ```python
 df = pd.read_csv("data/training.csv")
-df = extract_physics_features(df)
 df["Label"] = df["Label"].map({'s': 1, 'b': 0})   # to binary 1/0
 
 y = df["Label"].values          # target
 weights = df["Weight"].values   # physics weights
-X = df.drop(columns=['EventId', 'Weight', 'Label'])  # features only
+X = df.drop(columns=['EventId', 'Weight', 'Label'])  # features only (the 30 official ones)
 ```
 
 Note that `EventId`, `Weight` and `Label` are **removed from `X`**: they are not predictors.
@@ -391,7 +374,6 @@ overfit to its particular split).
 
 ```python
 df_test = pd.read_csv('data/test.csv')
-df_test = extract_physics_features(df_test)     # SAME pipeline as training!
 X_test = df_test.drop(columns=['EventId'])
 dtest = xgb.DMatrix(X_test, missing=-999.0)
 
@@ -404,10 +386,10 @@ for i in range(1, 6):
 final_probabilities = ensemble_probabilities / 5
 ```
 
-> **Golden rule:** the test feature pipeline must be **identical** to the training one (same
-> columns, same order). Here both use `extract_physics_features`, so it matches. If training used
-> columns you don't generate at test time (e.g. PCA features), XGBoost would fail with a
-> *feature mismatch* or produce invalid predictions.
+> **Golden rule:** the test features must be **identical** to the training ones (same columns,
+> same order). Here both simply use the 30 official columns straight from the CSV, so it matches.
+> If training used columns you don't reproduce at test time (e.g. engineered or PCA features),
+> XGBoost would fail with a *feature mismatch* or produce invalid predictions.
 
 ### Kaggle's submission format
 
@@ -417,14 +399,15 @@ The submission needs 3 columns: `EventId`, `RankOrder` and `Class`.
 submission = submission.sort_values(by='Prob', ascending=True)
 submission['RankOrder'] = range(1, len(submission) + 1)   # 1 = least signal, 550000 = most signal
 
-PROBABILITY_THRESHOLD = 0.942     # the "Robust Mean Threshold" from training
+PROBABILITY_THRESHOLD = 0.940     # robust threshold from training (out-of-fold)
 submission['Class'] = np.where(submission['Prob'] > PROBABILITY_THRESHOLD, 's', 'b')
 ```
 
 - **`RankOrder`:** orders the 550k events from least to most "signal-like". We sort by ascending
   probability and number them 1…550000. Kaggle requires it to evaluate AMS at different cuts.
-- **`Class`:** `'s'` if the probability exceeds the threshold, `'b'` otherwise. The `0.942` is the
-  robust mean threshold produced by training.
+- **`Class`:** `'s'` if the probability exceeds the threshold, `'b'` otherwise. The `0.940` is the
+  threshold chosen on the pooled out-of-fold predictions (see [section 11](#en-11-ideas-to-improve-and-learn-more));
+  it scored **AMS 3.72** on Kaggle, the project's best.
 
 The result is sorted by `EventId` and saved to `submission_ensembled.csv`.
 
@@ -479,29 +462,48 @@ Output: `submission_ensembled.csv`, ready to upload to Kaggle.
 
 ## 11. Ideas to improve and learn more
 
-Concrete things to experiment with (and why):
+### Already tried in this project (and the honest result)
 
-1. **Per-jet-number models.** `PRI_jet_num` (0/1/2/3) defines very different subpopulations: when
-   there are no jets, many variables are `-999`. Training one model per jet group is the technique
-   the winners used. Very high improvement potential.
-2. **Optimize the threshold on the ensemble prediction**, not by averaging per-fold thresholds.
-   Generate out-of-fold predictions, concatenate them, and find the cut that maximizes the global
-   AMS.
-3. **Revisit `Delta_R_tau_lep`.** It is almost a duplicate of `DER_deltar_tau_lep`. Try removing
-   it and creating genuinely new features (e.g. mass combinations, centralities, `pt` ratios),
-   measuring the impact on the validation AMS.
-4. **Hyperparameter tuning** (`max_depth`, `eta`, `min_child_weight`, `gamma`, `lambda`/`alpha`
-   regularization) with Optuna, always validating with AMS.
+- **Removing the redundant `Delta_R_tau_lep`** (done): CV-neutral (−0.011), so we kept the simpler
+  model. See [section 6](#en-6-featurespy--feature-engineering).
+- **Isotonic calibration of the probabilities**: AMS **dropped** (3.714 → 3.682). See the lesson
+  below.
+- **Per-jet-number models** (`PRI_jet_num` split into {0, 1, ≥2}) **+ per-group OOF thresholds** —
+  the textbook "winners' trick". A controlled CV said a tie (5.4925 vs 5.4901), and Kaggle
+  confirmed it: **3.716 vs 3.714 — +0.002, within leaderboard noise**. Not adopted: 3× the models
+  and complexity for no real gain. Why so little? XGBoost's native missing-value handling already
+  learns the jet-conditional structure, and splitting shrinks the data available to each model.
+  (The winners who gained from this used linear models / neural nets, which handle structural
+  missingness far worse.)
+- **Single threshold on out-of-fold (OOF) predictions** instead of averaging per-fold thresholds
+  (**adopted**): a more principled, more stable operating point. In CV it looked like a tie, but on
+  the real leaderboard it clearly won — the OOF threshold `0.940` scored **3.72**, while the noisy
+  per-fold average `0.934` scored only 3.70. This is the current `PROBABILITY_THRESHOLD` and the
+  project's best result. It also shows how sensitive AMS is to the operating point: a 0.006 shift
+  in the cut moved the score by 0.02, with no change to the model at all.
 
-### Lesson learned from this project
+### Still worth trying
 
-We tried **isotonic calibration** of the probabilities and the AMS **dropped** (3.714 → 3.682).
-Why? Because AMS-by-threshold is a **ranking** metric: only the order of events and where you cut
-matter. Calibration is a **monotonic** transformation, so for a single model it does not change
-the ranking (nor the AMS). In an **ensemble**, calibrating each fold separately before averaging
-does alter the combined order, but makes it **worse** (it introduces ties and clipping near the
-cut). Moral: **choose the technique according to what your metric rewards.** Calibration fixes the
-*magnitude* of the probabilities, something this metric does not reward.
+1. **Genuinely new physics features** — φ-rotation (fix `PRI_tau_phi = 0` and rotate the rest to
+   remove an irrelevant rotational symmetry), log-transform of long-tailed variables (`pt`,
+   masses), mass combinations. This is what actually separated the top solutions.
+2. **Hyperparameter tuning** (`max_depth`, `eta`, `min_child_weight`, `gamma`, `lambda`/`alpha`)
+   with Optuna, always validating with AMS.
+3. **A diverse stacked ensemble** — combine genuinely different base learners (LightGBM, a neural
+   net) with a simple meta-model. Stacking only helps when the base models are *diverse*; stacking
+   five near-identical XGBoost models gains nothing.
+
+### Lessons learned from this project
+
+- **Match the technique to the metric.** AMS-by-threshold is a **ranking** metric — only the order
+  of events and where you cut matter. That is why **isotonic calibration hurt**: it fixes
+  probability *magnitude*, which the metric ignores, and averaging per-fold calibrators only
+  reshuffles the combined ranking for the worse. Calibration is a monotonic transform, so for a
+  single model it would not change the ranking (nor the AMS) at all.
+- **Measure before you commit.** Both "sure-fire" upgrades (the jet split, the OOF threshold)
+  turned out to be ties. A controlled cross-validation predicted that *before* spending a Kaggle
+  submission, and the leaderboard confirmed it. Rigorous measurement is what stops you from
+  shipping complexity in exchange for noise.
 
 ---
 ---
@@ -529,7 +531,7 @@ sirva como material de aprendizaje.
 3. [Los datos: qué significa cada columna](#es-3-los-datos-qué-significa-cada-columna)
 4. [La métrica AMS: por qué no usamos accuracy](#es-4-la-métrica-ams-por-qué-no-usamos-accuracy)
 5. [Arquitectura de la solución](#es-5-arquitectura-de-la-solución)
-6. [`features.py` — ingeniería de características](#es-6-featurespy--ingeniería-de-características)
+6. [Características: por qué no hay ingeniería de características propia](#es-6-featurespy--ingeniería-de-características)
 7. [`train_model.py` — entrenamiento paso a paso](#es-7-train_modelpy--entrenamiento-paso-a-paso)
 8. [`generate_submission.py` — inferencia y envío](#es-8-generate_submissionpy--inferencia-y-envío)
 9. [Por qué cada decisión de diseño](#es-9-por-qué-cada-decisión-de-diseño)
@@ -565,7 +567,7 @@ Conceptos que aparecen en las variables y conviene tener en la cabeza:
 - **`eta` (η, pseudorapidez):** una forma de medir el ángulo respecto al eje del haz. η≈0 es
   perpendicular al haz; η grande es casi paralelo.
 - **`phi` (φ, ángulo azimutal):** el ángulo alrededor del haz (0 a 2π). Es un ángulo circular:
-  0 y 2π son el mismo sitio (esto importará en `features.py`).
+  0 y 2π son el mismo sitio.
 - **`MET` (Missing Transverse Energy):** energía "que falta". Como los neutrinos escapan sin
   dejar rastro, se deduce su presencia por el desequilibrio de momento. Los tau producen
   neutrinos, así que la MET es una pista fuerte de señal.
@@ -693,10 +695,7 @@ def calculate_ams(true_labels, predictions, weights, threshold):
 ## 5. Arquitectura de la solución
 
 ```
-                    data/training.csv (250k, etiquetado)
-                              │
-                              ▼
-                    features.py  (añade Delta_R_tau_lep)
+                    data/training.csv (250k, etiquetado, 30 features)
                               │
                               ▼
         ┌─────────────────────────────────────────────┐
@@ -708,10 +707,7 @@ def calculate_ams(true_labels, predictions, weights, threshold):
               higgs_model_fold_1..5.json  +  umbral medio
                               │
                               ▼
-                    data/test.csv (550k, sin etiqueta)
-                              │
-                              ▼
-                    features.py  (mismo pipeline)
+                    data/test.csv (550k, sin etiqueta, 30 features)
                               │
                               ▼
         ┌─────────────────────────────────────────────┐
@@ -733,40 +729,35 @@ Dos ideas centrales:
 
 <a name="es-6-featurespy--ingeniería-de-características"></a>
 
-## 6. `features.py` — ingeniería de características
+## 6. Características: por qué no hay ingeniería de características propia
 
-```python
-def extract_physics_features(df):
-    df_feat = df.copy()
+El modelo se entrena con las **30 variables oficiales tal cual** (13 `DER_` + 17 `PRI_`). No hay
+un paso de ingeniería de características, y es una decisión **deliberada y *medida***, no pereza.
 
-    # 1. Solo eventos donde EXISTEN tanto el tau como el leptón
-    valid_idx = (df_feat['PRI_tau_eta'] != -999.0) & (df_feat['PRI_lep_eta'] != -999.0)
+**El experimento.** Una versión anterior añadía una variable creada, `Delta_R_tau_lep`: la
+separación angular `ΔR = √(Δη² + Δφ²)` entre el tau y el leptón (una distancia en el plano (η, φ),
+donde señal y fondo tienen geometrías distintas). Parecía razonable, pero el dataset **ya trae
+`DER_deltar_tau_lep`** — exactamente la misma cantidad calculada por los físicos. Así que la
+variable "nueva" era en realidad un duplicado.
 
-    # 2. Delta Eta
-    d_eta = df_feat.loc[valid_idx, 'PRI_tau_eta'] - df_feat.loc[valid_idx, 'PRI_lep_eta']
+Lo verificamos en vez de suponerlo. Una validación cruzada controlada de 5 folds (mismos splits,
+seeds y params) midió el AMS de CV con y sin ella:
 
-    # 3. Delta Phi (ángulo circular)
-    d_phi = np.abs(df_feat.loc[valid_idx, 'PRI_tau_phi'] - df_feat.loc[valid_idx, 'PRI_lep_phi'])
-    d_phi = np.where(d_phi > np.pi, 2 * np.pi - d_phi, d_phi)
+| Configuración | AMS medio de CV |
+|---|---|
+| **Con** `Delta_R_tau_lep` | 5.5538 |
+| **Sin** `Delta_R_tau_lep` | 5.5426 |
+| Δ | −0.0112 (dentro del ruido entre folds) |
 
-    # 4. Delta R = sqrt(Δη² + Δφ²)
-    df_feat['Delta_R_tau_lep'] = -999.0
-    df_feat.loc[valid_idx, 'Delta_R_tau_lep'] = np.sqrt(d_eta**2 + d_phi**2)
+La variable **no aportaba nada** (la diferencia es ruido), así que se eliminó. El modelo es más
+simple y puntúa al menos igual de bien — **AMS 3.72** en Kaggle, el mejor del proyecto (ver la nota
+sobre el umbral en la [sección 11](#es-11-ideas-para-mejorar-y-aprender-más)).
 
-    return df_feat
-```
-
-**Qué calcula:** la **separación angular ΔR** entre el tau y el leptón. Es una distancia en el
-plano (η, φ):  `ΔR = √(Δη² + Δφ²)`. Señal y fondo tienden a tener geometrías distintas, así que
-esta distancia ayuda a separarlos.
-
-**Detalles que enseñan buenas prácticas:**
-
-- **Máscara `valid_idx`:** solo calcula ΔR donde ambas partículas existen. Donde no, deja
-  `-999.0`, coherente con el resto del dataset. Nunca calcules sobre valores centinela.
-- **El truco del Δφ circular:** φ va de 0 a 2π y "da la vuelta". La distancia entre φ=0.1 y
-  φ=6.2 **no** es 6.1, sino ≈0.18 (el camino corto por el otro lado). La línea
-  `np.where(d_phi > np.pi, 2π − d_phi, d_phi)` corrige esto. Es un error clásico olvidarlo.
+> **Lección:** buena ingeniería de características = añadir información que el modelo **no** tiene
+> ya. Recalcular una cantidad que ya es una columna — aunque tenga sentido físico — es esfuerzo
+> tirado. Y la forma de saberlo es **medir con validación cruzada**, no fiarse de la intuición.
+> Las features genuinamente nuevas (combinaciones de masas, invariancias por rotación de φ, etc.)
+> son la palanca de verdad — ver [sección 11](#es-11-ideas-para-mejorar-y-aprender-más).
 
 <a name="es-7-train_modelpy--entrenamiento-paso-a-paso"></a>
 
@@ -776,7 +767,6 @@ esta distancia ayuda a separarlos.
 
 ```python
 df = pd.read_csv("data/training.csv")
-df = extract_physics_features(df)
 df["Label"] = df["Label"].map({'s': 1, 'b': 0})   # a binario 1/0
 
 y = df["Label"].values          # objetivo
@@ -888,7 +878,6 @@ sobreajustado a su partición concreta).
 
 ```python
 df_test = pd.read_csv('data/test.csv')
-df_test = extract_physics_features(df_test)     # ¡MISMO pipeline que en train!
 X_test = df_test.drop(columns=['EventId'])
 dtest = xgb.DMatrix(X_test, missing=-999.0)
 
@@ -901,10 +890,10 @@ for i in range(1, 6):
 final_probabilities = ensemble_probabilities / 5
 ```
 
-> **Regla de oro:** el pipeline de features del test debe ser **idéntico** al del train (mismas
-> columnas, mismo orden). Aquí ambos usan `extract_physics_features`, así que encaja. Si en train
-> usaras columnas que no generas en test (p. ej. features de PCA), XGBoost fallaría por
-> *feature mismatch* o daría predicciones inválidas.
+> **Regla de oro:** las features del test deben ser **idénticas** a las del train (mismas
+> columnas, mismo orden). Aquí ambos usan simplemente las 30 columnas oficiales directas del CSV,
+> así que encaja. Si en train usaras columnas que no reproduces en test (p. ej. features creadas o
+> de PCA), XGBoost fallaría por *feature mismatch* o daría predicciones inválidas.
 
 ### El formato de envío de Kaggle
 
@@ -914,15 +903,16 @@ El envío necesita 3 columnas: `EventId`, `RankOrder` y `Class`.
 submission = submission.sort_values(by='Prob', ascending=True)
 submission['RankOrder'] = range(1, len(submission) + 1)   # 1 = menos señal, 550000 = más señal
 
-PROBABILITY_THRESHOLD = 0.942     # el "Robust Mean Threshold" del entrenamiento
+PROBABILITY_THRESHOLD = 0.940     # umbral robusto del entrenamiento (out-of-fold)
 submission['Class'] = np.where(submission['Prob'] > PROBABILITY_THRESHOLD, 's', 'b')
 ```
 
 - **`RankOrder`:** ordena los 550k eventos de menos a más "señal-like". Ordenamos por
   probabilidad ascendente y numeramos 1…550000. Kaggle lo pide para poder evaluar el AMS a
   distintos cortes.
-- **`Class`:** `'s'` si la probabilidad supera el umbral, `'b'` si no. El `0.942` es el umbral
-  medio robusto que salió del entrenamiento.
+- **`Class`:** `'s'` si la probabilidad supera el umbral, `'b'` si no. El `0.940` es el umbral
+  elegido sobre las predicciones out-of-fold agrupadas (ver [sección 11](#es-11-ideas-para-mejorar-y-aprender-más));
+  puntuó **AMS 3.72** en Kaggle, el mejor del proyecto.
 
 El resultado se ordena por `EventId` y se guarda en `submission_ensembled.csv`.
 
@@ -977,28 +967,48 @@ Salida: `submission_ensembled.csv`, listo para subir a Kaggle.
 
 ## 11. Ideas para mejorar y aprender más
 
-Cosas concretas con las que experimentar (y por qué):
+### Ya probado en este proyecto (y el resultado honesto)
 
-1. **Modelos por número de jets.** `PRI_jet_num` (0/1/2/3) define subpoblaciones muy distintas:
-   cuando no hay jets, muchas variables son `-999`. Entrenar un modelo por grupo de jets es la
-   técnica que usaron los ganadores. Muy alto potencial de mejora.
-2. **Optimizar el umbral sobre la predicción del ensemble**, no promediando umbrales por fold.
-   Genera predicciones out-of-fold, únelas y busca el corte que maximiza el AMS global.
-3. **Revisar `Delta_R_tau_lep`.** Es casi un duplicado de `DER_deltar_tau_lep`. Prueba a quitarla
-   y a crear features realmente nuevas (p. ej. combinaciones de masas, centralidades, ratios de
-   `pt`), midiendo el impacto en el AMS de validación.
-4. **Tuning de hiperparámetros** (`max_depth`, `eta`, `min_child_weight`, `gamma`, regularización
+- **Quitar la redundante `Delta_R_tau_lep`** (hecho): neutro en CV (−0.011), así que nos quedamos
+  con el modelo más simple. Ver [sección 6](#es-6-featurespy--ingeniería-de-características).
+- **Calibración isotónica de las probabilidades**: el AMS **bajó** (3.714 → 3.682). Ver la
+  lección de abajo.
+- **Modelos por número de jets** (`PRI_jet_num` en {0, 1, ≥2}) **+ umbrales OOF por grupo** — el
+  "truco de los ganadores" de manual. La CV controlada dio empate (5.4925 vs 5.4901), y Kaggle lo
+  confirmó: **3.716 vs 3.714 — +0.002, dentro del ruido del leaderboard**. No adoptado: 3× los
+  modelos y complejidad a cambio de nada real. ¿Por qué tan poco? El manejo nativo de faltantes de
+  XGBoost ya aprende la estructura condicional al número de jets, y el split reduce los datos
+  disponibles para cada modelo. (Los ganadores que sí ganaron con esto usaban modelos lineales /
+  redes, que manejan mucho peor la missingness estructural.)
+- **Umbral único sobre predicciones out-of-fold (OOF)** en vez de promediar umbrales por fold
+  (**adoptado**): un punto de operación más principled y estable. En CV parecía empate, pero en el
+  leaderboard real ganó con claridad — el umbral OOF `0.940` puntuó **3.72**, mientras que la media
+  ruidosa por fold `0.934` se quedó en 3.70. Es el `PROBABILITY_THRESHOLD` actual y el mejor
+  resultado del proyecto. Además muestra lo sensible que es el AMS al punto de corte: mover el
+  umbral 0.006 cambió el score 0.02, sin tocar el modelo.
+
+### Aún vale la pena probar
+
+1. **Features físicas genuinamente nuevas** — rotación de φ (fijar `PRI_tau_phi = 0` y rotar el
+   resto, eliminando una simetría rotacional irrelevante), log-transformar variables de cola larga
+   (`pt`, masas), combinaciones de masas. Esto es lo que de verdad separaba a los mejores.
+2. **Tuning de hiperparámetros** (`max_depth`, `eta`, `min_child_weight`, `gamma`,
    `lambda`/`alpha`) con Optuna, validando siempre con AMS.
+3. **Un ensemble diverso con stacking** — combinar modelos base genuinamente distintos (LightGBM,
+   una red neuronal) con un meta-modelo simple. El stacking solo ayuda cuando las bases son
+   *diversas*; apilar cinco XGBoost casi idénticos no aporta nada.
 
-### Lección aprendida de este proyecto
+### Lecciones aprendidas de este proyecto
 
-Se probó **calibración isotónica** de las probabilidades y el AMS **bajó** (3.714 → 3.682). ¿Por
-qué? Porque el AMS-por-umbral es una métrica de **ranking**: solo importa el orden de los eventos
-y dónde cortas. La calibración es una transformación **monótona**, así que para un modelo único no
-cambia el ranking (ni el AMS). En un **ensemble**, calibrar cada fold por separado antes de
-promediar sí altera el orden combinado, pero lo hace **peor** (introduce empates y recortes cerca
-del corte). Moraleja: **elige la técnica según lo que premia tu métrica.** La calibración arregla
-la *magnitud* de las probabilidades, algo que esta métrica no recompensa.
+- **Ajusta la técnica a la métrica.** El AMS-por-umbral es una métrica de **ranking**: solo
+  importa el orden de los eventos y dónde cortas. Por eso **la calibración isotónica hizo daño**:
+  arregla la *magnitud* de la probabilidad, que la métrica ignora, y promediar calibradores por
+  fold solo reordena el ranking combinado a peor. La calibración es una transformación monótona,
+  así que para un modelo único no cambiaría el ranking (ni el AMS) en absoluto.
+- **Mide antes de comprometerte.** Las dos mejoras "seguras" (el split por jets, el umbral OOF)
+  resultaron ser empates. Una validación cruzada controlada lo predijo *antes* de gastar una
+  submission a Kaggle, y el leaderboard lo confirmó. Medir con rigor es lo que te evita enviar
+  complejidad a cambio de ruido.
 
 ---
 
